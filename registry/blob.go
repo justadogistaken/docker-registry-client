@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -21,8 +23,8 @@ func (registry *Registry) DownloadBlob(repository string, digest digest.Digest) 
 	return resp.Body, nil
 }
 
-func (registry *Registry) UploadBlob(repository string, digest digest.Digest, content io.Reader) error {
-	uploadURL, err := registry.initiateUpload(repository)
+func (registry *Registry) UploadBlob(cxt context.Context, repository string, digest digest.Digest, content io.Reader) error {
+	uploadURL, token, err := registry.initiateUpload(cxt, repository)
 	if err != nil {
 		return err
 	}
@@ -37,8 +39,9 @@ func (registry *Registry) UploadBlob(repository string, digest digest.Digest, co
 		return err
 	}
 	upload.Header.Set("Content-Type", "application/octet-stream")
+	upload.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 
-	_, err = registry.Client.Do(upload)
+	_, err = registry.Client.Do(upload.WithContext(cxt))
 	return err
 }
 
@@ -87,22 +90,26 @@ func (registry *Registry) BlobMetadata(repository string, digest digest.Digest) 
 	}, nil
 }
 
-func (registry *Registry) initiateUpload(repository string) (*url.URL, error) {
+func (registry *Registry) initiateUpload(ctx context.Context, repository string) (*url.URL, string, error) {
 	initiateURL := registry.url("/v2/%s/blobs/uploads/", repository)
-	registry.Logf("registry.blob.initiate-upload url=%s repository=%s", initiateURL, repository)
+	registry.Logf("registry.layer.initiate-upload url=%s repository=%s", initiateURL, repository)
 
-	resp, err := registry.Client.Post(initiateURL, "application/octet-stream", nil)
-	if resp != nil {
-		defer resp.Body.Close()
-	}
+	req, err := http.NewRequest("POST", initiateURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := registry.Client.Do(req.WithContext(ctx))
+	if err != nil {
+		return nil, "", err
+	}
+	token := resp.Header.Get("Request-Token")
+	defer resp.Body.Close()
 
 	location := resp.Header.Get("Location")
 	locationURL, err := url.Parse(location)
 	if err != nil {
-		return nil, err
+		return nil, token, err
 	}
-	return locationURL, nil
+	return locationURL, token, nil
 }
